@@ -5,9 +5,21 @@ import os
 import requests
 from pypdf import PdfReader
 import gradio as gr
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import threading
+from datetime import datetime
+import uuid
 
 
 load_dotenv(override=True)
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)  # Enable CORS for frontend integration
+
+# Session storage for conversation history
+sessions = {}
 
 def push(text):
     requests.post(
@@ -127,8 +139,163 @@ If the user is engaging in discussion, try to steer them towards getting in touc
                 done = True
         return response.choices[0].message.content
     
+    def chat_api(self, message, history=None):
+        """API version of chat that handles history as a list of message objects"""
+        if history is None:
+            history = []
+        
+        messages = [{"role": "system", "content": self.system_prompt()}] + history + [{"role": "user", "content": message}]
+        done = False
+        while not done:
+            response = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=tools)
+            if response.choices[0].finish_reason=="tool_calls":
+                msg = response.choices[0].message
+                tool_calls = msg.tool_calls
+                results = self.handle_tool_call(tool_calls)
+                messages.append(msg)
+                messages.extend(results)
+            else:
+                done = True
+        
+        return {
+            "response": response.choices[0].message.content,
+            "updated_history": messages[1:]  # Exclude system prompt
+        }
+
+
+# Initialize the bot
+me = Me()
+
+
+# API Routes
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "service": "Portfolio Bot API",
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """
+    Main chat endpoint
+    Expected JSON body:
+    {
+        "message": "user message",
+        "session_id": "optional-session-id",
+        "history": [] // optional conversation history
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'message' not in data:
+            return jsonify({"error": "Message is required"}), 400
+        
+        message = data['message']
+        session_id = data.get('session_id', str(uuid.uuid4()))
+        history = data.get('history', [])
+        
+        # Get or create session
+        if session_id not in sessions:
+            sessions[session_id] = {
+                "created_at": datetime.now().isoformat(),
+                "history": []
+            }
+        
+        # Use provided history or session history
+        if not history and session_id in sessions:
+            history = sessions[session_id]['history']
+        
+        # Get response from bot
+        result = me.chat_api(message, history)
+        
+        # Update session history
+        sessions[session_id]['history'] = result['updated_history']
+        sessions[session_id]['last_interaction'] = datetime.now().isoformat()
+        
+        return jsonify({
+            "session_id": session_id,
+            "message": result['response'],
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    except Exception as e:
+        print(f"Error in chat endpoint: {str(e)}", flush=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/session/<session_id>', methods=['GET'])
+def get_session(session_id):
+    """Get session history"""
+    if session_id not in sessions:
+        return jsonify({"error": "Session not found"}), 404
+    
+    return jsonify({
+        "session_id": session_id,
+        "history": sessions[session_id]['history'],
+        "created_at": sessions[session_id]['created_at'],
+        "last_interaction": sessions[session_id].get('last_interaction')
+    })
+
+
+@app.route('/api/session/<session_id>', methods=['DELETE'])
+def delete_session(session_id):
+    """Clear session history"""
+    if session_id in sessions:
+        del sessions[session_id]
+        return jsonify({"message": "Session deleted successfully"})
+    return jsonify({"error": "Session not found"}), 404
+
+
+@app.route('/api/info', methods=['GET'])
+def get_info():
+    """Get bot information"""
+    return jsonify({
+        "name": me.name,
+        "description": f"AI-powered chatbot representing {me.name}",
+        "capabilities": [
+            "Answer questions about background and experience",
+            "Capture lead information",
+            "Record unanswered questions"
+        ]
+    })
+
+
+def run_flask():
+    """Run Flask API server"""
+    port = int(os.getenv("API_PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+
+def run_gradio():
+    """Run Gradio interface"""
+    gr.ChatInterface(me.chat, type="messages").launch(server_port=7860)
+    
 
 if __name__ == "__main__":
-    me = Me()
-    gr.ChatInterface(me.chat, type="messages").launch()
+    # Get mode from environment variable
+    mode = os.getenv("MODE", "both").lower()
+    
+    if mode == "api":
+        # Run only API
+        print("Starting Portfolio Bot API only...", flush=True)
+        run_flask()
+    elif mode == "gradio":
+        # Run only Gradio
+        print("Starting Portfolio Bot Gradio interface only...", flush=True)
+        run_gradio()
+    else:
+        # Run both (default)
+        print("Starting Portfolio Bot with both API and Gradio interface...", flush=True)
+        
+        # Start Flask in a separate thread
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
+        # Run Gradio in main thread
+        run_gradio()
     
