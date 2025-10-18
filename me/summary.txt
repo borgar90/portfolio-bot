@@ -1,2 +1,77 @@
-My name is Borgar Flaen Stensrud. I'm an entrepreneur, software engineer, informatician and physicist. I'm originally from Skien, Norway.
-I love all foods, particularly mediterranean food, but strangely I'm repelled by almost all forms of meat.
+GitHub profile summary for Borgar Flaen Stensrud (https://github.com/borgar90).
+A developer from norway. I love constructing stuff with mathematics. And i love to organise information into objects.
+Based in Norway; 5 followers; 61 public repositories.
+
+Primary languages:
+- TypeScript: 15 repos (24.6% of portfolio)
+- JavaScript: 10 repos (16.4% of portfolio)
+- Other: 9 repos (14.8% of portfolio)
+- Python: 7 repos (11.5% of portfolio)
+- HTML: 5 repos (8.2% of portfolio)
+
+Highlighted repositories (top 8 by stars and recent activity):
+- Webstore-SaaS [TypeScript] | Last update: 2025-10-17
+  No description provided
+  Repository: https://github.com/borgar90/Webstore-SaaS
+  Quality signals: Linting/config automation files; Issues enabled
+
+- FiskAI [Kotlin] | Last update: 2025-10-17
+  No description provided
+  Repository: https://github.com/borgar90/FiskAI
+  Quality signals: Issues enabled
+
+- my-docker-ngix-cloudflared-homeserver [Unknown] | Last update: 2025-10-17
+  No description provided
+  Repository: https://github.com/borgar90/my-docker-ngix-cloudflared-homeserver
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.eslint.js' in borgar90/my-docker-ngix-cloudflared-homeserver. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+- portfolio-bot [Python] | Last update: 2025-10-16
+  A chatbot for answering questions on my portfolio
+  Repository: https://github.com/borgar90/portfolio-bot
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.github/workflows' in borgar90/portfolio-bot. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+- portfolio_stensrud [TypeScript] | Last update: 2025-10-15
+  No description provided
+  Repository: https://github.com/borgar90/portfolio_stensrud
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.github/workflows' in borgar90/portfolio_stensrud. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+- Timeregn [TypeScript] | Last update: 2025-10-14
+  No description provided
+  Repository: https://github.com/borgar90/Timeregn
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.github/workflows' in borgar90/Timeregn. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+- bank-cluster [TypeScript] | Last update: 2025-10-14
+  No description provided
+  Repository: https://github.com/borgar90/bank-cluster
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.github/workflows' in borgar90/bank-cluster. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+- aiorganizer [Python] | Last update: 2025-10-13
+  My own personal organizer
+  Repository: https://github.com/borgar90/aiorganizer
+  Quality signals: Quality analysis unavailable: Unable to inspect path '.github/workflows' in borgar90/aiorganizer. Status: 403. Body: {"message":"API rate limit exceeded for 88.95.250.128. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}
+
+
+Recent activity:
+- Webstore-SaaS updated on 2025-10-17
+- FiskAI updated on 2025-10-17
+- my-docker-ngix-cloudflared-homeserver updated on 2025-10-17
+- portfolio-bot updated on 2025-10-16
+- portfolio_stensrud updated on 2025-10-15
+
+How to collaborate:
+- Portfolio or blog: http://www.borgar-flaen-stensrud.com/
+- GitHub profile: https://github.com/borgar90
+
+Aggregate quality indicators across highlighted repositories:
+- CI/CD workflows present in 0 of 2
+- Automated tests in 0 of 2
+- Dedicated docs folders in 0 of 2
+- Lint/tooling configs in 1 of 2
+- Containerization support in 0 of 2
+
+Generated on 2025-10-17T23:58:31.852176Z

@@ -4,13 +4,11 @@ import json
 import os
 import requests
 from pypdf import PdfReader
-import gradio as gr
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
 from datetime import datetime
 import uuid
-
+from apig_wsgi import make_lambda_handler
 
 load_dotenv(override=True)
 
@@ -265,37 +263,11 @@ def get_info():
     })
 
 
-def run_flask():
-    """Run Flask API server"""
-    port = int(os.getenv("API_PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+# AWS Lambda handler via API Gateway -> WSGI bridge
+lambda_handler = make_lambda_handler(app)
 
-
-def run_gradio():
-    """Run Gradio interface"""
-    gr.ChatInterface(me.chat, type="messages").launch(server_port=7860)
-    
 
 if __name__ == "__main__":
-    # Get mode from environment variable
-    mode = os.getenv("MODE", "both").lower()
-    
-    if mode == "api":
-        # Run only API
-        print("Starting Portfolio Bot API only...", flush=True)
-        run_flask()
-    elif mode == "gradio":
-        # Run only Gradio
-        print("Starting Portfolio Bot Gradio interface only...", flush=True)
-        run_gradio()
-    else:
-        # Run both (default)
-        print("Starting Portfolio Bot with both API and Gradio interface...", flush=True)
-        
-        # Start Flask in a separate thread
-        flask_thread = threading.Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-        
-        # Run Gradio in main thread
-        run_gradio()
-    
+    port = int(os.getenv("API_PORT", 5000))
+    print(f"Starting Portfolio Bot API on port {port}...", flush=True)
+    app.run(host='0.0.0.0', port=port, debug=False)

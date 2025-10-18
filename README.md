@@ -21,7 +21,7 @@ The bot intelligently:
 ## 🚀 Features
 
 ### REST API
-- **Full REST API** for frontend integration
+- Full REST API for frontend integration
 - Session management for conversation continuity
 - CORS enabled for cross-origin requests
 - JSON responses for easy parsing
@@ -43,10 +43,10 @@ The bot intelligently:
 - Helps you identify gaps in your portfolio information
 - Continuous improvement through feedback
 
-### Dual Interface
-- **Gradio UI**: Built-in chat interface for testing and demos
-- **REST API**: Integrate with your custom frontend
-- Run both simultaneously or choose one mode
+### Frontend Ready
+- Use the included HTML example (`examples/frontend-example.html`)
+- Integrates seamlessly with React, Vue, or any SPA
+- Customize the chat experience to match your brand
 
 ## 📋 Prerequisites
 
@@ -102,26 +102,12 @@ I love [interests/hobbies]. [Any other relevant personal information].
 
 ### 5. Run the Application
 
-**Run both API and Gradio interface (default):**
 ```bash
-python app.py
-```
-- API: `http://localhost:5000`
-- Gradio UI: `http://localhost:7860`
-
-**Run only the API:**
-```bash
-# Set MODE=api in .env or:
-set MODE=api  # Windows
-export MODE=api  # Linux/Mac
 python app.py
 ```
 
-**Run only Gradio:**
-```bash
-set MODE=gradio  # Windows
-python app.py
-```
+- Default port: `5000` (override with `API_PORT` environment variable)
+- Base URL: `http://localhost:5000`
 
 ## 🌐 API Usage
 
@@ -232,13 +218,13 @@ const response = await bot.sendMessage("Hello!");
 console.log(response.message);
 ```
 
-### Option 2: Embedding Gradio
+### Option 2: Use the HTML Starter
 
-The Gradio interface can be embedded in any website using an iframe:
-
-```html
-<iframe src="http://localhost:7860" width="100%" height="600px"></iframe>
-```
+Open `examples/frontend-example.html` in your browser while the API is running. This file shows how to:
+- Render a polished chat experience
+- Persist sessions via `localStorage`
+- Display typing indicators and status messages
+- Call your API endpoint via `fetch`
 
 ### Customization
 
@@ -249,15 +235,30 @@ Edit `app.py` to:
 - Customize API endpoints
 - Add authentication/rate limiting
 
+### Generate Profile Summary from GitHub
+
+Keep `me/summary.txt` in sync with your public GitHub activity using the helper script:
+
+```bash
+python scripts/github_summary.py --username <your_github_username>
+```
+
+Options:
+- `--tokenEnv GITHUB_TOKEN` (or `--token <value>`) to avoid rate limits
+- `--output me/summary.txt` (default) to control destination
+- `--max-repos 8` to change how many highlighted repositories are listed
+
+The script queries the GitHub REST API, summarises your repos/languages, and rewrites `me/summary.txt`, which the bot already loads on startup.
+
 ## 📦 Dependencies
 
 - `openai` - OpenAI API client
-- `gradio` - Web UI framework for chat interface
 - `pypdf` - PDF parsing for LinkedIn profile
 - `requests` - HTTP requests for Pushover notifications
 - `python-dotenv` - Environment variable management
 - `flask` - REST API server
 - `flask-cors` - Cross-origin resource sharing for API
+- `apig-wsgi` - Bridges the Flask app to AWS Lambda
 
 ## 🔒 Security
 
@@ -267,6 +268,59 @@ Edit `app.py` to:
 - All tool calls are logged for transparency
 - Consider adding authentication for production API deployment
 - Sessions are stored in memory (implement Redis/database for production)
+
+## ☁️ Deploy to AWS Lambda with SAM
+
+The existing Flask API can be deployed to AWS Lambda + API Gateway without rewriting it. The repo now includes `template.yaml`, which provisions the Lambda function and HTTP endpoint.
+
+### 1. Prerequisites
+
+- Install AWS CLI (`pip install awscli --upgrade`) and configure credentials: `aws configure`
+- Install AWS SAM CLI: `pip install aws-sam-cli`
+- (Optional) Install Docker for building in a containerized environment
+
+### 2. Configure Secrets
+
+The Lambda function expects secrets in AWS Secrets Manager:
+
+| Secret | Keys | Used for |
+|--------|------|----------|
+| `openai-key` | `api_key` | OpenAI API key |
+| `pushover-credentials` | `token`, `user` | Pushover notification credentials |
+
+Create the secrets in the AWS console and note their ARNs.
+
+### 3. Deploy with SAM
+
+```bash
+# From the repository root
+sam build
+sam deploy --guided
+```
+
+During `sam deploy` provide:
+- **Stack Name**: e.g. `portfolio-bot`
+- **AWS Region**: e.g. `eu-north-1`
+- **OpenAISecretArn** and **PushoverSecretArn**: enter the ARNs from Secrets Manager
+- Accept IAM role creation when prompted
+
+Deployment outputs the API Gateway invoke URL, for example:
+
+```
+https://abcd1234.execute-api.eu-north-1.amazonaws.com/Prod/
+```
+
+Use that URL as the base for your frontend (`/api/chat`, `/api/info`, etc.).
+
+### 4. Local testing
+
+You can still run the API locally:
+
+```bash
+python app.py
+```
+
+This uses the same Flask app that Lambda invokes via `apig-wsgi`.
 
 ## 🎨 Future Enhancements
 

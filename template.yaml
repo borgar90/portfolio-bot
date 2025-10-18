@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Portfolio Bot backend running on AWS Lambda + API Gateway
+
+Globals:
+  Function:
+    Timeout: 20
+    Runtime: python3.11
+    MemorySize: 512
+
+Parameters:
+  OpenAISecretArn:
+    Type: String
+    Description: "ARN of the Secrets Manager secret that stores the OpenAI API key (key name: api_key)"
+  PushoverSecretArn:
+    Type: String
+    Description: "ARN of the Secrets Manager secret with Pushover credentials (keys: token, user)"
+  ApiStageName:
+    Type: String
+    Default: Prod
+    Description: API Gateway stage name
+
+Resources:
+  PortfolioBotApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: app.lambda_handler
+      Architectures:
+        - x86_64
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref OpenAISecretArn
+                - !Ref PushoverSecretArn
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Sub "{{resolve:secretsmanager:${OpenAISecretArn}:SecretString:api_key}}"
+          PUSHOVER_TOKEN: !Sub "{{resolve:secretsmanager:${PushoverSecretArn}:SecretString:token}}"
+          PUSHOVER_USER: !Sub "{{resolve:secretsmanager:${PushoverSecretArn}:SecretString:user}}"
+      Events:
+        RestApi:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref PortfolioBotHttpApi
+
+  PortfolioBotHttpApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref ApiStageName
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          title: Portfolio Bot API
+          version: '1.0'
+        paths:
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              consumes:
+                - application/json
+              produces:
+                - application/json
+              responses:
+                default:
+                  statusCode: '200'
+              x-amazon-apigateway-integration:
+                uri:
+                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PortfolioBotApi.Arn}/invocations
+                httpMethod: POST
+                type: aws_proxy
+
+Outputs:
+  ApiUrl:
+    Description: Invoke URL for the deployed API
+    Value: !Sub https://${PortfolioBotHttpApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/
+

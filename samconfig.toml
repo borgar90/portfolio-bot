@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "portfolio-bot"
+resolve_s3 = true
+s3_prefix = "portfolio-bot"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = true
+parameter_overrides = "OpenAISecretArn=\"arn:aws:secretsmanager:eu-north-1:798216154796:secret:portfoliobot-z4o7B9\" PushoverSecretArn=\"arn:aws:secretsmanager:eu-north-1:798216154796:secret:portfoliobot-z4o7B9\" ApiStageName=\"Prod\""
+image_repositories = []
+region = "eu-north-1"
+
+[default.global.parameters]
+region = "eu-north-1"
