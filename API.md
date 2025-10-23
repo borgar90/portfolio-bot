@@ -42,12 +42,27 @@ Send a message to the bot and get a response.
 - `session_id` (optional): Unique identifier for the conversation session. If not provided, a new one will be generated.
 - `history` (optional): Array of previous messages in the conversation. If not provided, session history will be used.
 
+**Language awareness:** The assistant mirrors the visitor's language automatically and defaults to Norwegian whenever it is unsure.
+
 **Response:**
 ```json
 {
   "session_id": "abc123-def456-ghi789",
   "message": "I'm an entrepreneur, software engineer, informatician and physicist...",
-  "timestamp": "2025-10-16T10:30:00.000000"
+  "timestamp": "2025-10-16T10:30:00.000000",
+  "rate_limited": false
+}
+```
+
+If the per-session rate limit is exceeded the response returns `rate_limited: true` and the `message` explains the situation in the visitor's language (Norwegian by default).
+
+**Rate-limited example:**
+```json
+{
+  "session_id": "abc123-def456-ghi789",
+  "message": "Jeg svarer gjerne, men jeg er begrenset til noen få meldinger per minutt per besøkende. Prøv igjen om et lite øyeblikk.",
+  "timestamp": "2025-10-16T10:30:30.000000",
+  "rate_limited": true
 }
 ```
 
@@ -101,8 +116,8 @@ Get information about the bot.
 **Response:**
 ```json
 {
-  "name": "Ed Donner",
-  "description": "AI-powered chatbot representing Ed Donner",
+  "name": "Borgar Flaen Stensrud",
+  "description": "AI-powered chatbot representing Borgar Flaen Stensrud",
   "capabilities": [
     "Answer questions about background and experience",
     "Capture lead information",
@@ -192,6 +207,7 @@ def send_message(message, session_id=None):
 result = send_message("What is your background?")
 print(result['message'])
 print(result['session_id'])  # Save this for subsequent requests
+print(result['rate_limited'])  # True when the per-session limit is hit
 ```
 
 ### cURL
@@ -211,11 +227,12 @@ The API can be configured using environment variables in your `.env` file:
 # API server port (default: 5000)
 API_PORT=5000
 
-# Run mode: "api", "gradio", or "both" (default: both)
-MODE=both
+# Observability and resiliency
+LOG_LEVEL=INFO
+RATE_LIMIT_MAX_REQUESTS=8
+RATE_LIMIT_WINDOW_SECONDS=60
+OPENAI_TIMEOUT_SECONDS=30
+PUSHOVER_TIMEOUT_SECONDS=5
 ```
 
-**Run Modes:**
-- `api` - Only start the Flask API server
-- `gradio` - Only start the Gradio interface
-- `both` - Start both (API on port 5000, Gradio on port 7860)
+Tune these values to balance responsiveness with protection. If you disable rate limiting (set `RATE_LIMIT_MAX_REQUESTS` to `0`), the `rate_limited` flag will always be `false`.

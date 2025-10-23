@@ -12,24 +12,12 @@ cp .env.example .env  # Then edit with your keys
 
 ## Running the Server
 
-### Both API + Gradio (Default)
 ```bash
 python app.py
 ```
 - API: http://localhost:5000
-- Gradio UI: http://localhost:7860
-
-### API Only
-```bash
-set MODE=api
-python app.py
-```
-
-### Gradio Only
-```bash
-set MODE=gradio
-python app.py
-```
+- Structured JSON logs are printed to stdout for easier monitoring
+- Built-in rate limiting keeps the experience smooth for each visitor
 
 ## Quick API Test
 
@@ -76,6 +64,14 @@ function ChatBot() {
     setSessionId(data.session_id);
     localStorage.setItem('bot_session', data.session_id);
     
+    if (data.rate_limited) {
+      setMessages([...messages,
+        { role: 'user', content: message },
+        { role: 'assistant', content: data.message }
+      ]);
+      return;
+    }
+
     setMessages([...messages, 
       { role: 'user', content: message },
       { role: 'assistant', content: data.message }
@@ -125,6 +121,15 @@ export default {
       this.sessionId = data.session_id;
       localStorage.setItem('bot_session', data.session_id);
       
+      if (data.rate_limited) {
+        this.messages.push(
+          { role: 'user', content: this.input },
+          { role: 'assistant', content: data.message }
+        );
+        this.input = '';
+        return;
+      }
+
       this.messages.push(
         { role: 'user', content: this.input },
         { role: 'assistant', content: data.message }
@@ -157,6 +162,7 @@ class ChatAPI {
     const data = await response.json();
     this.sessionId = data.session_id;
     localStorage.setItem('bot_session', data.session_id);
+    // Caller should inspect data.rate_limited to pause follow-up messages
     return data;
   }
 
@@ -184,6 +190,7 @@ class ChatAPI {
 const chat = new ChatAPI();
 const result = await chat.sendMessage("Hello!");
 console.log(result.message);
+console.log(result.rate_limited);
 ```
 
 ## API Endpoints Summary
@@ -205,8 +212,12 @@ PUSHOVER_TOKEN=your_token
 PUSHOVER_USER=your_user_key
 
 # Optional
-API_PORT=5000          # Default: 5000
-MODE=both              # Options: api, gradio, both
+API_PORT=5000                  # Default: 5000
+LOG_LEVEL=INFO                 # Structured log verbosity
+RATE_LIMIT_MAX_REQUESTS=8      # Requests allowed per session in the window
+RATE_LIMIT_WINDOW_SECONDS=60   # Window size in seconds
+OPENAI_TIMEOUT_SECONDS=30      # Timeout for OpenAI responses
+PUSHOVER_TIMEOUT_SECONDS=5     # Timeout for Pushover notifications
 ```
 
 ## Production Deployment
@@ -214,7 +225,7 @@ MODE=both              # Options: api, gradio, both
 For production, consider:
 
 1. **Add Authentication**: JWT tokens, API keys
-2. **Rate Limiting**: Prevent abuse
+2. **Tune Rate Limiting**: Adjust the built-in per-session limits or add global protection (reverse proxy, Redis)
 3. **Persistent Storage**: Use Redis or database for sessions
 4. **HTTPS**: Use SSL certificates
 5. **Error Handling**: Better error messages and logging
@@ -246,7 +257,11 @@ gunicorn -w 4 -b 0.0.0.0:5000 app:app
 - Verify API key is valid
 - Check account has credits
 - Review rate limits
+- Inspect structured logs for `openai_error` events
 
+**Getting rate limited quickly:**
+- Increase `RATE_LIMIT_MAX_REQUESTS` or `RATE_LIMIT_WINDOW_SECONDS`
+- Surface the `rate_limited` flag in your UI to guide visitors
 ## Next Steps
 
 1. Customize the system prompt in `app.py`

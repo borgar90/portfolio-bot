@@ -1,42 +1,163 @@
+import json
+import logging
+import os
+import time
+import uuid
+from datetime import datetime
+
 from dotenv import load_dotenv
 from openai import OpenAI
-import json
-import os
 import requests
 from pypdf import PdfReader
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response
 from flask_cors import CORS
-from datetime import datetime
-import uuid
 from apig_wsgi import make_lambda_handler
 
 load_dotenv(override=True)
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+logging.basicConfig(level=LOG_LEVEL, format="%(message)s")
+logger = logging.getLogger("portfolio_bot")
+
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "8"))
+PUSHOVER_TIMEOUT_SECONDS = float(os.getenv("PUSHOVER_TIMEOUT_SECONDS", "5"))
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+
 # Initialize Flask app
 app = Flask(__name__)
+app.config["JSON_AS_ASCII"] = False
 CORS(app)  # Enable CORS for frontend integration
 
 # Session storage for conversation history
 sessions = {}
 
+NORWEGIAN_KEYWORDS = {
+    "hei",
+    "hva",
+    "hvordan",
+    "takk",
+    "v\u00e6r",
+    "bes\u00f8kende",
+    "kontakt",
+    "erfaring",
+    "ferdigheter",
+    "bakgrunn",
+}
+
+ENGLISH_KEYWORDS = {
+    "hello",
+    "what",
+    "how",
+    "thanks",
+    "please",
+    "contact",
+    "background",
+    "experience",
+    "skills",
+    "portfolio",
+}
+
+
+def log_event(event_type, **details):
+    payload = {"event": event_type, "timestamp": datetime.now().isoformat()}
+    payload.update(details)
+    logger.info(json.dumps(payload, default=str, ensure_ascii=False))
+
+
+def detect_language_preference(text):
+    lowered = text.lower()
+    if any(ch in lowered for ch in ("\u00e6", "\u00f8", "\u00e5")):
+        return "no"
+    if any(keyword in lowered for keyword in NORWEGIAN_KEYWORDS):
+        return "no"
+    if any(keyword in lowered for keyword in ENGLISH_KEYWORDS):
+        return "en"
+    return "no"
+
+
+def rate_limit_message(language_code):
+    if language_code == "en":
+        return "I'd love to keep chatting, but I can only respond to a few messages per minute per visitor. Please try again in a moment."
+    return "Jeg svarer gjerne, men jeg er begrenset til noen f\u00e5 meldinger per minutt per bes\u00f8kende. Pr\u00f8v igjen om et lite \u00f8yeblikk."
+
+
+def fallback_error_message(language_code):
+    if language_code == "en":
+        return "Sorry, I ran into an issue reaching the service. Please try again shortly."
+    return "Beklager, jeg st\u00f8tte p\u00e5 et problem med tjenesten min. Kan du pr\u00f8ve igjen om litt?"
+
+
+def check_rate_limit(session_id, language_code):
+    if RATE_LIMIT_MAX_REQUESTS <= 0:
+        return False, None
+
+    session = sessions.get(session_id)
+    if not session:
+        return False, None
+
+    now = time.time()
+    timestamps = session.setdefault("request_timestamps", [])
+    timestamps = [ts for ts in timestamps if now - ts < RATE_LIMIT_WINDOW_SECONDS]
+
+    if len(timestamps) >= RATE_LIMIT_MAX_REQUESTS:
+        session["request_timestamps"] = timestamps
+        log_event(
+            "rate_limited",
+            session_id=session_id,
+            count=len(timestamps),
+            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        )
+        return True, rate_limit_message(language_code)
+
+    timestamps.append(now)
+    session["request_timestamps"] = timestamps
+    return False, None
+
+
 def push(text):
-    requests.post(
-        "https://api.pushover.net/1/messages.json",
-        data={
-            "token": os.getenv("PUSHOVER_TOKEN"),
-            "user": os.getenv("PUSHOVER_USER"),
-            "message": text,
-        }
-    )
+    token = os.getenv("PUSHOVER_TOKEN")
+    user_key = os.getenv("PUSHOVER_USER")
+    if not token or not user_key:
+        log_event("pushover_skipped", reason="missing_credentials")
+        return False
+
+    try:
+        response = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": token,
+                "user": user_key,
+                "message": text,
+            },
+            timeout=PUSHOVER_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        log_event("pushover_delivered", characters=len(text))
+        return True
+    except requests.RequestException as exc:
+        log_event("pushover_error", error=str(exc), preview=text[:120])
+        return False
 
 
 def record_user_details(email, name="Name not provided", notes="not provided"):
     push(f"Recording {name} with email {email} and notes {notes}")
+    log_event("record_user_details", email=email, name=name)
     return {"recorded": "ok"}
 
 def record_unknown_question(question):
     push(f"Recording {question}")
+    log_event("record_unknown_question", question_preview=question[:120])
     return {"recorded": "ok"}
+
+
+def json_response(payload, status=200):
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        status=status,
+        mimetype="application/json; charset=utf-8"
+    )
 
 record_user_details_json = {
     "name": "record_user_details",
@@ -86,8 +207,8 @@ tools = [{"type": "function", "function": record_user_details_json},
 class Me:
 
     def __init__(self):
-        self.openai = OpenAI()
-        self.name = "Ed Donner"
+        self.openai = OpenAI(timeout=OPENAI_TIMEOUT_SECONDS, max_retries=OPENAI_MAX_RETRIES)
+        self.name = "Borgar Flaen Stensrud"
         reader = PdfReader("me/linkedin.pdf")
         self.linkedin = ""
         for page in reader.pages:
@@ -103,10 +224,14 @@ class Me:
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
             arguments = json.loads(tool_call.function.arguments)
-            print(f"Tool called: {tool_name}", flush=True)
+            log_event("tool_invoked", tool=tool_name)
             tool = globals().get(tool_name)
-            result = tool(**arguments) if tool else {}
-            results.append({"role": "tool","content": json.dumps(result),"tool_call_id": tool_call.id})
+            if not tool:
+                log_event("tool_missing", tool=tool_name)
+                result = {}
+            else:
+                result = tool(**arguments)
+            results.append({"role": "tool","content": json.dumps(result, ensure_ascii=False),"tool_call_id": tool_call.id})
         return results
     
     def system_prompt(self):
@@ -116,36 +241,44 @@ Your responsibility is to represent {self.name} for interactions on the website 
 You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions. \
 Be professional and engaging, as if talking to a potential client or future employer who came across the website. \
 If you don't know the answer to any question, use your record_unknown_question tool to record the question that you couldn't answer, even if it's about something trivial or unrelated to career. \
-If the user is engaging in discussion, try to steer them towards getting in touch via email; ask for their email and record it using your record_user_details tool. "
+If the user is engaging in discussion, try to steer them towards getting in touch via email; ask for their email and record it using your record_user_details tool. \
+Always respond in the same language the user uses, defaulting to Norwegian when you are unsure which language they prefer. "
 
         system_prompt += f"\n\n## Summary:\n{self.summary}\n\n## LinkedIn Profile:\n{self.linkedin}\n\n"
         system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
         return system_prompt
     
     def chat(self, message, history):
-        messages = [{"role": "system", "content": self.system_prompt()}] + history + [{"role": "user", "content": message}]
-        done = False
-        while not done:
-            response = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=tools)
-            if response.choices[0].finish_reason=="tool_calls":
-                message = response.choices[0].message
-                tool_calls = message.tool_calls
-                results = self.handle_tool_call(tool_calls)
-                messages.append(message)
-                messages.extend(results)
-            else:
-                done = True
-        return response.choices[0].message.content
+        result = self.chat_api(message, history, language_hint=detect_language_preference(message))
+        return result["response"]
     
-    def chat_api(self, message, history=None):
+    def chat_api(self, message, history=None, language_hint="no"):
         """API version of chat that handles history as a list of message objects"""
         if history is None:
             history = []
         
-        messages = [{"role": "system", "content": self.system_prompt()}] + history + [{"role": "user", "content": message}]
+        messages = [{"role": "system", "content": self.system_prompt()}] + list(history) + [{"role": "user", "content": message}]
         done = False
+        response = None
         while not done:
-            response = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=tools)
+            try:
+                response = self.openai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    tools=tools,
+                    timeout=OPENAI_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                log_event("openai_error", error=str(exc))
+                updated_history = list(history)
+                updated_history.append({"role": "user", "content": message})
+                fallback = fallback_error_message(language_hint or "no")
+                updated_history.append({"role": "assistant", "content": fallback})
+                return {
+                    "response": fallback,
+                    "updated_history": updated_history,
+                    "error": "openai_unavailable"
+                }
             if response.choices[0].finish_reason=="tool_calls":
                 msg = response.choices[0].message
                 tool_calls = msg.tool_calls
@@ -155,6 +288,17 @@ If the user is engaging in discussion, try to steer them towards getting in touc
             else:
                 done = True
         
+        usage = getattr(response, "usage", None)
+        if usage:
+            log_event(
+                "chat_completion",
+                input_tokens=getattr(usage, "prompt_tokens", None),
+                output_tokens=getattr(usage, "completion_tokens", None),
+                total_tokens=getattr(usage, "total_tokens", None),
+            )
+        else:
+            log_event("chat_completion", input_tokens=None, output_tokens=None, total_tokens=None)
+
         return {
             "response": response.choices[0].message.content,
             "updated_history": messages[1:]  # Exclude system prompt
@@ -169,7 +313,7 @@ me = Me()
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
+    return json_response({
         "status": "healthy",
         "service": "Portfolio Bot API",
         "timestamp": datetime.now().isoformat()
@@ -191,48 +335,84 @@ def chat():
         data = request.get_json()
         
         if not data or 'message' not in data:
-            return jsonify({"error": "Message is required"}), 400
+            return json_response({"error": "Message is required"}, status=400)
         
         message = data['message']
         session_id = data.get('session_id', str(uuid.uuid4()))
         history = data.get('history', [])
+        language = detect_language_preference(message)
         
         # Get or create session
         if session_id not in sessions:
             sessions[session_id] = {
                 "created_at": datetime.now().isoformat(),
-                "history": []
+                "history": [],
+                "request_timestamps": []
             }
         
         # Use provided history or session history
         if not history and session_id in sessions:
             history = sessions[session_id]['history']
+
+        history_list = list(history)
+
+        log_event(
+            "chat_request",
+            session_id=session_id,
+            language=language,
+            history_length=len(history_list),
+        )
+
+        limited, limit_message = check_rate_limit(session_id, language)
+        if limited:
+            updated_history = history_list + [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": limit_message},
+            ]
+            sessions[session_id]['history'] = updated_history
+            sessions[session_id]['last_interaction'] = datetime.now().isoformat()
+            log_event("chat_rate_limited", session_id=session_id, language=language)
+            return json_response({
+                "session_id": session_id,
+                "message": limit_message,
+                "timestamp": datetime.now().isoformat(),
+                "rate_limited": True
+            })
         
         # Get response from bot
-        result = me.chat_api(message, history)
+        result = me.chat_api(message, history_list, language_hint=language)
         
         # Update session history
         sessions[session_id]['history'] = result['updated_history']
         sessions[session_id]['last_interaction'] = datetime.now().isoformat()
+        log_event(
+            "chat_response",
+            session_id=session_id,
+            language=language,
+            rate_limited=False,
+            error=result.get("error")
+        )
         
-        return jsonify({
+        response_body = {
             "session_id": session_id,
             "message": result['response'],
-            "timestamp": datetime.now().isoformat()
-        })
+            "timestamp": datetime.now().isoformat(),
+            "rate_limited": False,
+        }
+        return json_response(response_body)
     
     except Exception as e:
-        print(f"Error in chat endpoint: {str(e)}", flush=True)
-        return jsonify({"error": str(e)}), 500
+        log_event("chat_endpoint_error", error=str(e), session_id=data.get("session_id") if 'data' in locals() and isinstance(data, dict) else None)
+        return json_response({"error": str(e)}, status=500)
 
 
 @app.route('/api/session/<session_id>', methods=['GET'])
 def get_session(session_id):
     """Get session history"""
     if session_id not in sessions:
-        return jsonify({"error": "Session not found"}), 404
+        return json_response({"error": "Session not found"}, status=404)
     
-    return jsonify({
+    return json_response({
         "session_id": session_id,
         "history": sessions[session_id]['history'],
         "created_at": sessions[session_id]['created_at'],
@@ -245,14 +425,14 @@ def delete_session(session_id):
     """Clear session history"""
     if session_id in sessions:
         del sessions[session_id]
-        return jsonify({"message": "Session deleted successfully"})
-    return jsonify({"error": "Session not found"}), 404
+        return json_response({"message": "Session deleted successfully"})
+    return json_response({"error": "Session not found"}, status=404)
 
 
 @app.route('/api/info', methods=['GET'])
 def get_info():
     """Get bot information"""
-    return jsonify({
+    return json_response({
         "name": me.name,
         "description": f"AI-powered chatbot representing {me.name}",
         "capabilities": [

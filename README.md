@@ -31,6 +31,7 @@ The bot intelligently:
 - Uses OpenAI GPT-4o-mini for natural, context-aware responses
 - Trained on your LinkedIn profile and personal summary
 - Maintains professional tone while being engaging
+- Mirrors the visitor's language automatically and defaults to Norwegian when uncertain
 
 ### Lead Capture System
 - Automatically detects when visitors want to connect
@@ -47,6 +48,11 @@ The bot intelligently:
 - Use the included HTML example (`examples/frontend-example.html`)
 - Integrates seamlessly with React, Vue, or any SPA
 - Customize the chat experience to match your brand
+
+### Resilient by Default
+- Structured JSON logging for easier monitoring
+- OpenAI and Pushover calls guarded by timeouts and error handling
+- Built-in per-session rate limiting with friendly user notifications
 
 ## 📋 Prerequisites
 
@@ -80,8 +86,12 @@ PUSHOVER_TOKEN=your_pushover_app_token
 PUSHOVER_USER=your_pushover_user_key
 
 # Optional
-API_PORT=5000              # API server port (default: 5000)
-MODE=both                  # Run mode: "api", "gradio", or "both" (default: both)
+API_PORT=5000                  # API server port (default: 5000)
+LOG_LEVEL=INFO                 # Logging level for structured events
+RATE_LIMIT_MAX_REQUESTS=8      # Requests allowed per session within the window
+RATE_LIMIT_WINDOW_SECONDS=60   # Window size in seconds for rate limiting
+OPENAI_TIMEOUT_SECONDS=30      # Timeout for OpenAI responses
+PUSHOVER_TIMEOUT_SECONDS=5     # Timeout for Pushover notifications
 ```
 
 **How to get these:**
@@ -126,9 +136,10 @@ const response = await fetch('http://localhost:5000/api/chat', {
   })
 });
 
-const data = await response.json();
-console.log(data.message);  // Bot's response
-console.log(data.session_id);  // Save for next request
+  const data = await response.json();
+  console.log(data.message);  // Bot's response
+  console.log(data.session_id);  // Save for next request
+  console.log(data.rate_limited); // true when the per-session limit is hit
 ```
 
 ### Available Endpoints
@@ -138,6 +149,7 @@ console.log(data.session_id);  // Save for next request
 - `GET /api/session/{id}` - Get conversation history
 - `DELETE /api/session/{id}` - Clear session
 - `GET /api/info` - Get bot information
+- Every `/api/chat` response includes a `rate_limited` flag so frontends can pause gracefully
 
 ### Example Frontend
 
