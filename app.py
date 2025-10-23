@@ -133,6 +133,7 @@ class SessionStore:
             self._cache.pop(sid, None)
 
     def get(self, session_id: str):
+        """Fetch session data, refreshing TTL and returning a JSON-safe copy."""
         if self.redis:
             raw = self.redis.get(self._key(session_id))
             if not raw:
@@ -312,6 +313,7 @@ def check_rate_limit(session_id, session, language_code):
 
 
 def push(text):
+    """Send a Pushover notification with the supplied message."""
     token = os.getenv("PUSHOVER_TOKEN")
     user_key = os.getenv("PUSHOVER_USER")
     if not token or not user_key:
@@ -337,11 +339,13 @@ def push(text):
 
 
 def record_user_details(email, name="Name not provided", notes="not provided"):
+    """Capture lead/contact details via Pushover so they are actioned quickly."""
     push(f"Recording {name} with email {email} and notes {notes}")
     log_event("record_user_details", email=email, name=name)
     return {"recorded": "ok"}
 
 def record_unknown_question(question):
+    """Log unanswered user questions for later follow-up."""
     push(f"Recording {question}")
     log_event("record_unknown_question", question_preview=question[:120])
     return {"recorded": "ok"}
@@ -403,9 +407,22 @@ tools = [{"type": "function", "function": record_user_details_json},
 class Me:
     """Encapsulates persona data and LLM interaction helpers."""
 
+    @staticmethod
+    def _normalize_history(messages):
+        """Return a JSON-serialisable representation of the conversation."""
+        normalised = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                normalised.append(json.loads(json.dumps(msg, ensure_ascii=False)))
+            elif hasattr(msg, "model_dump"):
+                normalised.append(json.loads(json.dumps(msg.model_dump(), ensure_ascii=False)))
+            else:
+                normalised.append({"role": getattr(msg, "role", "unknown"), "content": getattr(msg, "content", str(msg))})
+        return normalised
+
     def __init__(self):
         """Load personal knowledge sources and configure OpenAI client."""
-        self.openai = OpenAI(timeout=OPENAI_TIMEOUT_SECONDS, max_retries=OPENAI_MAX_RETRIES)
+        self.openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), timeout=OPENAI_TIMEOUT_SECONDS, max_retries=OPENAI_MAX_RETRIES)
         self.name = "Borgar Flaen Stensrud"
         reader = PdfReader("me/linkedin.pdf")
         self.linkedin = ""
@@ -500,9 +517,11 @@ Always respond in the same language the user uses, defaulting to Norwegian when 
         else:
             log_event("chat_completion", input_tokens=None, output_tokens=None, total_tokens=None)
 
+        clean_history = self._normalize_history(messages[1:])
+
         return {
             "response": response.choices[0].message.content,
-            "updated_history": messages[1:]  # Exclude system prompt
+            "updated_history": clean_history  # Exclude system prompt
         }
 
 
@@ -617,7 +636,7 @@ def chat():
         )
 
         message_store.store(session_id, "assistant", result['response'], language=language)
-        
+
         response_body = {
             "session_id": session_id,
             "message": result['response'],
@@ -683,3 +702,5 @@ if __name__ == "__main__":
 
     log_event("wsgi_server_starting", host=host, port=port, threads=threads, server="waitress")
     serve(app, host=host, port=port, threads=threads)
+
+
