@@ -216,9 +216,18 @@ API_PORT=5000                  # Default: 5000
 LOG_LEVEL=INFO                 # Structured log verbosity
 RATE_LIMIT_MAX_REQUESTS=8      # Requests allowed per session in the window
 RATE_LIMIT_WINDOW_SECONDS=60   # Window size in seconds
+REDIS_URL=redis://redis:6379/0      # Optional: Redis-backed session store
+SESSION_TTL_SECONDS=3600            # Session expiry window (minimum 60s)
+LOG_FORWARD_URL=https://logs.example.com/collect  # Optional log forwarding webhook
+LOG_FORWARD_TIMEOUT=2               # Timeout for webhook calls
+WSGI_THREADS=4                      # Waitress worker threads
 OPENAI_TIMEOUT_SECONDS=30      # Timeout for OpenAI responses
 PUSHOVER_TIMEOUT_SECONDS=5     # Timeout for Pushover notifications
+DATABASE_URL=postgresql+psycopg://user:pass@host:5432/portfolio_bot   # Optional: persistent chat storage
 ```
+
+When `DATABASE_URL` is present the server writes each user/assistant message to a `conversation_messages` table (auto-created if missing). Leave it unset to skip persistence while still serving responses.
+When `REDIS_URL` is supplied the server keeps sessions in Redis and expires them automatically with `SESSION_TTL_SECONDS` (minimum 60s). Without Redis the app falls back to an in-memory cache that observes the same TTL.
 
 ## Production Deployment
 

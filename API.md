@@ -17,9 +17,15 @@ Check if the API is running.
 {
   "status": "healthy",
   "service": "Portfolio Bot API",
-  "timestamp": "2025-10-16T10:30:00.000000"
+  "timestamp": "2025-10-16T10:30:00.000000",
+  "database": {"status": "ok", "backend": "postgresql"},
+  "session_store": {"status": "ok", "backend": "redis"}
 }
 ```
+
+A degraded component returns HTTP 503 with details under database and session_store.
+
+
 
 ---
 
@@ -225,6 +231,12 @@ The API can be configured using environment variables in your `.env` file:
 
 ```env
 # API server port (default: 5000)
+API_HOST=0.0.0.0
+REDIS_URL=redis://redis:6379/0
+SESSION_TTL_SECONDS=3600
+LOG_FORWARD_URL=https://logs.example.com/collect
+LOG_FORWARD_TIMEOUT=2
+WSGI_THREADS=4
 API_PORT=5000
 
 # Observability and resiliency
@@ -233,6 +245,7 @@ RATE_LIMIT_MAX_REQUESTS=8
 RATE_LIMIT_WINDOW_SECONDS=60
 OPENAI_TIMEOUT_SECONDS=30
 PUSHOVER_TIMEOUT_SECONDS=5
+DATABASE_URL=postgresql+psycopg://user:pass@host:5432/portfolio_bot
 ```
 
-Tune these values to balance responsiveness with protection. If you disable rate limiting (set `RATE_LIMIT_MAX_REQUESTS` to `0`), the `rate_limited` flag will always be `false`.
+Tune these values to balance responsiveness with protection. If you disable rate limiting (set `RATE_LIMIT_MAX_REQUESTS` to `0`), the `rate_limited` flag will always be `false`. Set `DATABASE_URL` to persist every message into the auto-created `conversation_messages` table; leave it unset to skip storage. Configure REDIS_URL to move session storage to Redis (TTL via SESSION_TTL_SECONDS). Set LOG_FORWARD_URL if you want to emit structured logs to a webhook or collector.

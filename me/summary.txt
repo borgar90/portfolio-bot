@@ -6,6 +6,9 @@ I tillegg til arbeidserfaring har jeg en dyp interesse for matematikk og hvordan
 
 Hvis du har flere spørsmål eller ønsker å diskutere noe spesifikt, vennligst gi meg beskjed!
 
+Jeg har jobbet med backend-utvikling i snart femten år og bygger raskt robuste REST‑API-er uansett plattform. Jeg er komfortabel med hele stacken fra Node.js/TypeScript og PHP til C#, Python og Java, og skreddersyr løsningene med riktig lagring, kryptering og autentisering når det trengs. Jeg liker å kombinere effektiv arkitektur med trygg håndtering av data, enten det handler om klassiske CRUD-tjenester, integrasjoner mot eksterne systemer eller sikkerhetskritiske løsninger.
+
+
 GitHub profile summary for Borgar Flaen Stensrud (https://github.com/borgar90).
 A developer from norway. I love constructing stuff with mathematics. And i love to organise information into objects.
 Based in Norway; 5 followers; 61 public repositories.

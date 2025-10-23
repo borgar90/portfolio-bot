@@ -1,17 +1,38 @@
+"""Portfolio bot API server with multilingual support, Redis-backed sessions, and
+PostgreSQL transcript archiving.
+
+Author: Borgar Flaen Stensrud / BFS Company
+"""
+
 import json
 import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
+import requests
+import redis
 from dotenv import load_dotenv
 from openai import OpenAI
-import requests
 from pypdf import PdfReader
 from flask import Flask, request, Response
 from flask_cors import CORS
 from apig_wsgi import make_lambda_handler
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    MetaData,
+    String,
+    Table,
+    Text,
+    create_engine,
+    insert,
+    text,
+)
+from sqlalchemy.exc import SQLAlchemyError
 
 load_dotenv(override=True)
 
@@ -24,14 +45,16 @@ RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "8"))
 PUSHOVER_TIMEOUT_SECONDS = float(os.getenv("PUSHOVER_TIMEOUT_SECONDS", "5"))
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+REDIS_URL = os.getenv("REDIS_URL")
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+LOG_FORWARD_URL = os.getenv("LOG_FORWARD_URL")
+LOG_FORWARD_TIMEOUT = float(os.getenv("LOG_FORWARD_TIMEOUT", "2"))
 
 # Initialize Flask app
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 CORS(app)  # Enable CORS for frontend integration
-
-# Session storage for conversation history
-sessions = {}
 
 NORWEGIAN_KEYWORDS = {
     "hei",
@@ -60,13 +83,183 @@ ENGLISH_KEYWORDS = {
 }
 
 
+def forward_log(payload: dict):
+    """Send structured logs to optional webhook for centralized monitoring."""
+    if not LOG_FORWARD_URL:
+        return
+    try:
+        requests.post(LOG_FORWARD_URL, json=payload, timeout=LOG_FORWARD_TIMEOUT)
+    except requests.RequestException as exc:
+        logger.debug("log_forward_failed %s", exc)
+
+
 def log_event(event_type, **details):
-    payload = {"event": event_type, "timestamp": datetime.now().isoformat()}
+    """Record an event with ISO timestamp and forward it if a collector is configured."""
+    payload = {"event": event_type, "timestamp": datetime.now(timezone.utc).isoformat()}
     payload.update(details)
     logger.info(json.dumps(payload, default=str, ensure_ascii=False))
+    forward_log(payload)
+
+
+class SessionStore:
+    """Maintain per-session chat context with Redis TTL fallback to in-memory cache."""
+
+    def __init__(self, redis_url: str | None, ttl_seconds: int):
+        self.ttl = max(ttl_seconds, 60)
+        self.redis = None
+        self._cache = {}
+        if redis_url:
+            try:
+                self.redis = redis.Redis.from_url(redis_url, decode_responses=True)
+                self.redis.ping()
+                log_event("session_store_ready", backend="redis")
+            except redis.RedisError as exc:
+                log_event("session_store_error", error=str(exc))
+                self.redis = None
+                log_event("session_store_fallback", reason="redis_connection_failed")
+                log_event("session_store_in_memory", reason="redis_connection_failed")
+        else:
+            log_event("session_store_in_memory", reason="missing_redis_url")
+
+    def _key(self, session_id: str) -> str:
+        return f"portfolio_bot:session:{session_id}"
+
+    def _purge_expired(self):
+        if self.redis:
+            return
+        now = time.time()
+        expired = [sid for sid, record in self._cache.items() if record["expires"] < now]
+        for sid in expired:
+            self._cache.pop(sid, None)
+
+    def get(self, session_id: str):
+        if self.redis:
+            raw = self.redis.get(self._key(session_id))
+            if not raw:
+                return None
+            self.redis.expire(self._key(session_id), self.ttl)
+            return json.loads(raw)
+        self._purge_expired()
+        record = self._cache.get(session_id)
+        if not record:
+            return None
+        record["expires"] = time.time() + self.ttl
+        return json.loads(json.dumps(record["data"]))  # return a shallow copy
+
+    def set(self, session_id: str, data: dict):
+        """Persist chat state and refresh its TTL."""
+        payload = json.loads(json.dumps(data, ensure_ascii=False))
+        if self.redis:
+            self.redis.set(self._key(session_id), json.dumps(payload, ensure_ascii=False), ex=self.ttl)
+        else:
+            self._cache[session_id] = {"data": payload, "expires": time.time() + self.ttl}
+
+    def delete(self, session_id: str):
+        """Remove a session, clearing any stored context."""
+        if self.redis:
+            self.redis.delete(self._key(session_id))
+        else:
+            self._cache.pop(session_id, None)
+
+    def touch(self, session_id: str):
+        """Extend the TTL without mutating the stored payload."""
+        if self.redis:
+            self.redis.expire(self._key(session_id), self.ttl)
+        else:
+            record = self._cache.get(session_id)
+            if record:
+                record["expires"] = time.time() + self.ttl
+
+    def health(self):
+        """Report backend health for monitoring surfaces."""
+        if self.redis:
+            try:
+                self.redis.ping()
+                return {"status": "ok", "backend": "redis"}
+            except redis.RedisError as exc:
+                return {"status": "error", "backend": "redis", "error": str(exc)}
+        self._purge_expired()
+        return {"status": "in_memory", "backend": "memory", "active_sessions": len(self._cache)}
+
+
+class MessageStore:
+    """Persist messages to the backing SQL database for analytics and auditing."""
+
+    def __init__(self, database_url: str | None):
+        self.engine = None
+        self.table = None
+        if not database_url:
+            log_event("message_store_disabled", reason="missing_database_url")
+            return
+
+        try:
+            self.engine = create_engine(database_url, pool_pre_ping=True, future=True)
+            metadata = MetaData()
+            self.table = Table(
+                "conversation_messages",
+                metadata,
+                Column("id", String(36), primary_key=True),
+                Column("session_id", String(64), nullable=False, index=True),
+                Column("role", String(16), nullable=False),
+                Column("content", Text, nullable=False),
+                Column("language", String(8)),
+                Column("rate_limited", Boolean, nullable=False, default=False),
+                Column("created_at", DateTime(timezone=True), nullable=False),
+            )
+            metadata.create_all(self.engine)
+            log_event(
+                "message_store_ready",
+                backend=self.engine.url.get_backend_name(),
+                database=self.engine.url.database,
+            )
+        except SQLAlchemyError as exc:
+            log_event("message_store_error", error=str(exc))
+            self.engine = None
+            self.table = None
+
+    def store(self, session_id: str, role: str, content: str, language: str | None = None, rate_limited: bool = False):
+        """Insert a single message row into the conversation log."""
+        if self.engine is None or self.table is None:
+            return False
+
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    insert(self.table),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "session_id": session_id,
+                        "role": role,
+                        "content": content,
+                        "language": language,
+                        "rate_limited": rate_limited,
+                        "created_at": datetime.now(timezone.utc),
+                    },
+                )
+            return True
+        except SQLAlchemyError as exc:
+            log_event("message_store_write_failed", error=str(exc))
+            return False
+
+    def health(self):
+        """Report backend health for monitoring surfaces."""
+        if self.engine is None or self.table is None:
+            return {"status": "disabled", "backend": None}
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return {"status": "ok", "backend": self.engine.url.get_backend_name()}
+        except SQLAlchemyError as exc:
+            log_event("message_store_health_error", error=str(exc))
+            return {"status": "error", "backend": self.engine.url.get_backend_name(), "error": str(exc)}
+
+
+session_store = SessionStore(REDIS_URL, SESSION_TTL_SECONDS)
+message_store = MessageStore(DATABASE_URL)
 
 
 def detect_language_preference(text):
+    """Infer whether the visitor is likely speaking Norwegian or English."""
     lowered = text.lower()
     if any(ch in lowered for ch in ("\u00e6", "\u00f8", "\u00e5")):
         return "no"
@@ -78,22 +271,24 @@ def detect_language_preference(text):
 
 
 def rate_limit_message(language_code):
+    """Produce a per-language advisory when the rate limit triggers."""
     if language_code == "en":
         return "I'd love to keep chatting, but I can only respond to a few messages per minute per visitor. Please try again in a moment."
     return "Jeg svarer gjerne, men jeg er begrenset til noen f\u00e5 meldinger per minutt per bes\u00f8kende. Pr\u00f8v igjen om et lite \u00f8yeblikk."
 
 
 def fallback_error_message(language_code):
+    """Provide a friendly explanation if OpenAI is unreachable."""
     if language_code == "en":
         return "Sorry, I ran into an issue reaching the service. Please try again shortly."
     return "Beklager, jeg st\u00f8tte p\u00e5 et problem med tjenesten min. Kan du pr\u00f8ve igjen om litt?"
 
 
-def check_rate_limit(session_id, language_code):
+def check_rate_limit(session_id, session, language_code):
+    """Return flag + message when a session exceeds its quota within the rate window."""
     if RATE_LIMIT_MAX_REQUESTS <= 0:
         return False, None
 
-    session = sessions.get(session_id)
     if not session:
         return False, None
 
@@ -153,6 +348,7 @@ def record_unknown_question(question):
 
 
 def json_response(payload, status=200):
+    """Return a UTF-8 encoded JSON response with consistent headers."""
     return Response(
         json.dumps(payload, ensure_ascii=False),
         status=status,
@@ -205,8 +401,10 @@ tools = [{"type": "function", "function": record_user_details_json},
 
 
 class Me:
+    """Encapsulates persona data and LLM interaction helpers."""
 
     def __init__(self):
+        """Load personal knowledge sources and configure OpenAI client."""
         self.openai = OpenAI(timeout=OPENAI_TIMEOUT_SECONDS, max_retries=OPENAI_MAX_RETRIES)
         self.name = "Borgar Flaen Stensrud"
         reader = PdfReader("me/linkedin.pdf")
@@ -220,6 +418,7 @@ class Me:
 
 
     def handle_tool_call(self, tool_calls):
+        """Route tool calls emitted by the model to local helper functions."""
         results = []
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
@@ -235,6 +434,7 @@ class Me:
         return results
     
     def system_prompt(self):
+        """Build the long-form system prompt with persona context."""
         system_prompt = f"You are acting as {self.name}. You are answering questions on {self.name}'s website, \
 particularly questions related to {self.name}'s career, background, skills and experience. \
 Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible. \
@@ -249,6 +449,7 @@ Always respond in the same language the user uses, defaulting to Norwegian when 
         return system_prompt
     
     def chat(self, message, history):
+        """Simplified chat helper for non-API callers."""
         result = self.chat_api(message, history, language_hint=detect_language_preference(message))
         return result["response"]
     
@@ -313,11 +514,20 @@ me = Me()
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return json_response({
-        "status": "healthy",
+    db_status = message_store.health()
+    session_status = session_store.health()
+    overall = "healthy"
+    if db_status.get("status") == "error" or session_status.get("status") == "error":
+        overall = "unhealthy"
+    response = {
+        "status": overall,
         "service": "Portfolio Bot API",
-        "timestamp": datetime.now().isoformat()
-    })
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "database": db_status,
+        "session_store": session_status,
+    }
+    status_code = 200 if overall == "healthy" else 503
+    return json_response(response, status=status_code)
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -341,20 +551,29 @@ def chat():
         session_id = data.get('session_id', str(uuid.uuid4()))
         history = data.get('history', [])
         language = detect_language_preference(message)
-        
-        # Get or create session
-        if session_id not in sessions:
-            sessions[session_id] = {
-                "created_at": datetime.now().isoformat(),
-                "history": [],
-                "request_timestamps": []
-            }
-        
-        # Use provided history or session history
-        if not history and session_id in sessions:
-            history = sessions[session_id]['history']
 
-        history_list = list(history)
+        session = session_store.get(session_id)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if not session:
+            session = {
+                "created_at": now_iso,
+                "history": [],
+                "request_timestamps": [],
+                "last_interaction": now_iso,
+            }
+        else:
+            session_store.touch(session_id)
+            session.setdefault("history", [])
+            session.setdefault("request_timestamps", [])
+
+        if history:
+            history_list = list(history)
+            session["history"] = history_list
+        else:
+            history_list = list(session.get("history", []))
+
+        session["last_interaction"] = now_iso
+        message_store.store(session_id, "user", message, language=language)
 
         log_event(
             "chat_request",
@@ -363,19 +582,22 @@ def chat():
             history_length=len(history_list),
         )
 
-        limited, limit_message = check_rate_limit(session_id, language)
+        limited, limit_message = check_rate_limit(session_id, session, language)
+        session_store.set(session_id, session)
         if limited:
             updated_history = history_list + [
                 {"role": "user", "content": message},
                 {"role": "assistant", "content": limit_message},
             ]
-            sessions[session_id]['history'] = updated_history
-            sessions[session_id]['last_interaction'] = datetime.now().isoformat()
+            session["history"] = updated_history
+            session["last_interaction"] = datetime.now(timezone.utc).isoformat()
+            session_store.set(session_id, session)
             log_event("chat_rate_limited", session_id=session_id, language=language)
+            message_store.store(session_id, "assistant", limit_message, language=language, rate_limited=True)
             return json_response({
                 "session_id": session_id,
                 "message": limit_message,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": session["last_interaction"],
                 "rate_limited": True
             })
         
@@ -383,8 +605,9 @@ def chat():
         result = me.chat_api(message, history_list, language_hint=language)
         
         # Update session history
-        sessions[session_id]['history'] = result['updated_history']
-        sessions[session_id]['last_interaction'] = datetime.now().isoformat()
+        session["history"] = result['updated_history']
+        session["last_interaction"] = datetime.now(timezone.utc).isoformat()
+        session_store.set(session_id, session)
         log_event(
             "chat_response",
             session_id=session_id,
@@ -392,11 +615,13 @@ def chat():
             rate_limited=False,
             error=result.get("error")
         )
+
+        message_store.store(session_id, "assistant", result['response'], language=language)
         
         response_body = {
             "session_id": session_id,
             "message": result['response'],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": session["last_interaction"],
             "rate_limited": False,
         }
         return json_response(response_body)
@@ -409,22 +634,24 @@ def chat():
 @app.route('/api/session/<session_id>', methods=['GET'])
 def get_session(session_id):
     """Get session history"""
-    if session_id not in sessions:
+    session = session_store.get(session_id)
+    if not session:
         return json_response({"error": "Session not found"}, status=404)
-    
+    session_store.touch(session_id)
     return json_response({
         "session_id": session_id,
-        "history": sessions[session_id]['history'],
-        "created_at": sessions[session_id]['created_at'],
-        "last_interaction": sessions[session_id].get('last_interaction')
+        "history": session.get('history', []),
+        "created_at": session.get('created_at'),
+        "last_interaction": session.get('last_interaction')
     })
 
 
 @app.route('/api/session/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
     """Clear session history"""
-    if session_id in sessions:
-        del sessions[session_id]
+    session = session_store.get(session_id)
+    if session:
+        session_store.delete(session_id)
         return json_response({"message": "Session deleted successfully"})
     return json_response({"error": "Session not found"}, status=404)
 
@@ -448,6 +675,11 @@ lambda_handler = make_lambda_handler(app)
 
 
 if __name__ == "__main__":
+    from waitress import serve
+
+    host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", 5000))
-    print(f"Starting Portfolio Bot API on port {port}...", flush=True)
-    app.run(host='0.0.0.0', port=port, debug=False)
+    threads = int(os.getenv("WSGI_THREADS", "4"))
+
+    log_event("wsgi_server_starting", host=host, port=port, threads=threads, server="waitress")
+    serve(app, host=host, port=port, threads=threads)
